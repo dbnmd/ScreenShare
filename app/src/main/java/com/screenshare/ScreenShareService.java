@@ -42,6 +42,7 @@ public class ScreenShareService extends Service {
     private Socket clientSocket;
     private OutputStream outputStream;
     private boolean isRunning = false;
+    private long lastFrameTime = 0;
 
     @Override
     public void onCreate() {
@@ -63,12 +64,32 @@ public class ScreenShareService extends Service {
             MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
             mediaProjection = manager.getMediaProjection(resultCode, data);
             
-            startScreenCapture();
             startNetworkServer();
+            startScreenCapture();
             
             Toast.makeText(this, "屏幕共享已启动！端口：9998", Toast.LENGTH_SHORT).show();
         }
         return START_STICKY;
+    }
+
+    private void startNetworkServer() {
+        new Thread(() -> {
+            try {
+                serverSocket = new ServerSocket(PORT);
+                isRunning = true;
+                
+                while (isRunning) {
+                    try {
+                        clientSocket = serverSocket.accept();
+                        outputStream = clientSocket.getOutputStream();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }).start();
     }
 
     private void startScreenCapture() {
@@ -76,20 +97,31 @@ public class ScreenShareService extends Service {
         DisplayMetrics metrics = new DisplayMetrics();
         wm.getDefaultDisplay().getRealMetrics(metrics);
         
-        int width = metrics.widthPixels;
-        int height = metrics.heightPixels;
+        int width = metrics.widthPixels / 2;  // 减半分辨率，降低分辨率提高性能
+        int height = metrics.heightPixels / 2;
         int density = metrics.densityDpi;
         
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
         imageReader.setOnImageAvailableListener(reader -> {
-            if (!isRunning) return;
+            if (!isRunning || outputStream == null) return;
             
-            try (Image image = reader.acquireLatestImage()) {
-                if (image != null && outputStream != null) {
+            // 控制帧率，最多10帧每秒
+            long now = System.currentTimeMillis();
+            if (now - lastFrameTime < 100) return;
+            lastFrameTime = now;
+            
+            Image image = null;
+            try {
+                image = reader.acquireLatestImage();
+                if (image != null) {
                     sendFrame(image);
                 }
             } catch (Exception e) {
                 e.printStackTrace();
+            } finally {
+                if (image != null) {
+                    image.close();
+                }
             }
         }, handler);
         
@@ -100,22 +132,6 @@ public class ScreenShareService extends Service {
             imageReader.getSurface(),
             null, handler
         );
-    }
-
-    private void startNetworkServer() {
-        new Thread(() -> {
-            try {
-                serverSocket = new ServerSocket(PORT);
-                isRunning = true;
-                
-                while (isRunning) {
-                    clientSocket = serverSocket.accept();
-                    outputStream = clientSocket.getOutputStream();
-                }
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }).start();
     }
 
     private void sendFrame(Image image) {
@@ -136,21 +152,33 @@ public class ScreenShareService extends Service {
             Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, image.getWidth(), image.getHeight());
             
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            cropped.compress(Bitmap.CompressFormat.JPEG, 50, baos);
+            cropped.compress(Bitmap.CompressFormat.JPEG, 30, baos); // 压缩质量降到30%
             byte[] data = baos.toByteArray();
             
-            if (outputStream != null) {
-                byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
-                outputStream.write(sizeBuffer);
-                outputStream.write(data);
-                outputStream.flush();
-            }
+            // 先发送4字节长度，再发送数据
+            byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
+            outputStream.write(sizeBuffer);
+            outputStream.write(data);
+            outputStream.flush();
             
             bitmap.recycle();
             cropped.recycle();
             
         } catch (Exception e) {
             e.printStackTrace();
+            // 发送出错不崩溃，只是断开连接
+            try {
+                if (outputStream != null) {
+                    outputStream.close();
+                    outputStream = null;
+                }
+                if (clientSocket != null) {
+                    clientSocket.close();
+                    clientSocket = null;
+                }
+            } catch (IOException ex) {
+                ex.printStackTrace();
+            }
         }
     }
 
