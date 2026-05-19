@@ -1,6 +1,8 @@
 package com.screenshare;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.media.projection.MediaProjectionManager;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -13,9 +15,15 @@ import java.util.List;
 
 public class MainActivity extends Activity {
 
+    private static final int REQUEST_CODE = 1000;
+    private MediaProjectionManager projectionManager;
+    private boolean isServiceRunning = false;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
 
         // 创建布局
         LinearLayout layout = new LinearLayout(this);
@@ -28,11 +36,18 @@ public class MainActivity extends Activity {
         ipText.setTextSize(18);
         layout.addView(ipText);
 
+        // 状态显示
+        TextView statusText = new TextView(this);
+        statusText.setText("\n状态: 未启动");
+        statusText.setTextSize(16);
+        layout.addView(statusText);
+
         // 开始按钮
         Button startBtn = new Button(this);
         startBtn.setText("开始共享");
         startBtn.setOnClickListener(v -> {
-            Toast.makeText(this, "功能开发中...", Toast.LENGTH_SHORT).show();
+            Intent captureIntent = projectionManager.createScreenCaptureIntent();
+            startActivityForResult(captureIntent, REQUEST_CODE);
         });
         layout.addView(startBtn);
 
@@ -40,7 +55,8 @@ public class MainActivity extends Activity {
         Button stopBtn = new Button(this);
         stopBtn.setText("停止共享");
         stopBtn.setOnClickListener(v -> {
-            Toast.makeText(this, "功能开发中...", Toast.LENGTH_SHORT).show();
+            stopService();
+            statusText.setText("\n状态: 已停止");
         });
         layout.addView(stopBtn);
 
@@ -54,6 +70,31 @@ public class MainActivity extends Activity {
         layout.addView(hideBtn);
 
         setContentView(layout);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE && resultCode == RESULT_OK) {
+            Intent serviceIntent = new Intent(this, ScreenShareService.class);
+            serviceIntent.putExtra("resultCode", resultCode);
+            serviceIntent.putExtra("data", data);
+            
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+            
+            isServiceRunning = true;
+            Toast.makeText(this, "屏幕共享服务已启动", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void stopService() {
+        Intent serviceIntent = new Intent(this, ScreenShareService.class);
+        stopService(serviceIntent);
+        isServiceRunning = false;
     }
 
     private String getLocalIpAddress() {
