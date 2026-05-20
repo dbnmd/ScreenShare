@@ -9,7 +9,6 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Handler;
-import android.os.HandlerThread;
 import android.os.IBinder;
 import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
@@ -30,12 +29,15 @@ public class ScreenShareService extends Service {
     private volatile OutputStream outputStream;
     private volatile boolean isRunning = false;
     private volatile int frameCount = 0;
+    private volatile int reconnectCount = 0;
 
     @Override
     public void onCreate() {
         super.onCreate();
         mainHandler = new Handler(getMainLooper());
         createNotificationChannel();
+        
+        // 启动前台服务，最高优先级
         startForeground(NOTIFICATION_ID, getNotification());
         
         showToast("Service已创建");
@@ -43,31 +45,35 @@ public class ScreenShareService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // START_REDELIVER_INTENT：Service被杀死后自动重启
         startNetworkServer();
         startTestImageSender();
         
         showToast("服务已启动！端口：9998");
-        return START_STICKY;
+        return START_REDELIVER_INTENT; // 关键：被杀死后自动重启！
     }
 
     private void startNetworkServer() {
         new Thread(() -> {
             try {
-                showToast("正在启动ServerSocket...");
+                // 如果ServerSocket已经存在，先关闭
+                if (serverSocket != null && !serverSocket.isClosed()) {
+                    try { serverSocket.close(); } catch (Exception e) {}
+                }
+                
                 serverSocket = new ServerSocket(PORT);
                 isRunning = true;
                 showToast("ServerSocket启动成功！等待连接...");
                 
                 while (isRunning) {
                     try {
-                        showToast("等待客户端连接...");
-                        clientSocket = serverSocket.accept(); // 这里会阻塞，直到有人连接
-                        showToast("客户端已连接！IP: " + clientSocket.getInetAddress());
-                        
+                        // 等待新连接
+                        clientSocket = serverSocket.accept();
                         outputStream = clientSocket.getOutputStream();
-                        showToast("OutputStream获取成功！");
-                        
                         frameCount = 0;
+                        reconnectCount++;
+                        
+                        showToast("客户端已连接！重连次数: " + reconnectCount);
                         updateNotification();
                         
                     } catch (Exception e) {
@@ -88,11 +94,11 @@ public class ScreenShareService extends Service {
             while (isRunning) {
                 try {
                     if (outputStream != null && clientSocket != null && clientSocket.isConnected()) {
-                        // 能走到这里说明outputStream不是null！
                         Bitmap testBitmap = null;
                         try {
                             testBitmap = Bitmap.createBitmap(320, 480, Bitmap.Config.ARGB_8888);
-                            testBitmap.eraseColor(Color.RED);
+                            float hue = (frameCount * 5) % 360;
+                            testBitmap.eraseColor(Color.HSVToColor(255, new float[]{hue, 0.8f, 0.8f}));
                             
                             ByteArrayOutputStream baos = new ByteArrayOutputStream();
                             testBitmap.compress(Bitmap.CompressFormat.JPEG, 30, baos);
@@ -107,8 +113,9 @@ public class ScreenShareService extends Service {
                             updateNotification();
                             
                         } catch (Exception e) {
-                            showToast("发送出错: " + e.getMessage());
-                            e.printStackTrace();
+                            // Broken pipe，断开连接，等待重连
+                            showToast("发送出错，等待重连...");
+                            closeConnectionQuietly();
                         } finally {
                             if (testBitmap != null) {
                                 testBitmap.recycle();
@@ -116,13 +123,25 @@ public class ScreenShareService extends Service {
                         }
                     }
                     
-                    Thread.sleep(1000);
+                    Thread.sleep(100); // 10fps，更流畅
                     
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
             }
         }).start();
+    }
+
+    private void closeConnectionQuietly() {
+        try {
+            if (outputStream != null) outputStream.close();
+            if (clientSocket != null) clientSocket.close();
+        } catch (Exception e) {
+            // 忽略
+        } finally {
+            outputStream = null;
+            clientSocket = null;
+        }
     }
 
     private void showToast(final String message) {
@@ -142,9 +161,8 @@ public class ScreenShareService extends Service {
     public void onDestroy() {
         super.onDestroy();
         isRunning = false;
+        closeConnectionQuietly();
         try {
-            if (outputStream != null) outputStream.close();
-            if (clientSocket != null) clientSocket.close();
             if (serverSocket != null) serverSocket.close();
         } catch (Exception e) {
             e.printStackTrace();
@@ -162,7 +180,7 @@ public class ScreenShareService extends Service {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
                     "屏幕共享服务",
-                    NotificationManager.IMPORTANCE_LOW
+                    NotificationManager.IMPORTANCE_HIGH // 改成HIGH优先级
             );
             NotificationManager manager = getSystemService(NotificationManager.class);
             manager.createNotificationChannel(channel);
@@ -171,20 +189,22 @@ public class ScreenShareService extends Service {
 
     private Notification getNotification() {
         String status = clientSocket != null && clientSocket.isConnected() 
-            ? "已发送: " + frameCount + "帧" 
+            ? "已发送: " + frameCount + "帧 | 重连: " + reconnectCount
             : "等待连接";
             
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return new Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle("调试版")
+                    .setContentTitle("屏幕共享")
                     .setContentText(status)
                     .setSmallIcon(android.R.drawable.ic_menu_view)
+                    .setOngoing(true) // 常驻通知，无法被划掉
                     .build();
         }
         return new Notification.Builder(this)
-                .setContentTitle("调试版")
+                .setContentTitle("屏幕共享")
                 .setContentText(status)
                 .setSmallIcon(android.R.drawable.ic_menu_view)
+                .setOngoing(true)
                 .build();
     }
 }
