@@ -24,6 +24,7 @@ public class ScreenShareService extends Service {
     private static final String CHANNEL_ID = "ScreenShareChannel";
     private static final int NOTIFICATION_ID = 1;
     private static final int PORT = 9998;
+    private static final long FRAME_INTERVAL = 2000; // 改成2秒1帧，更慢更稳
     
     private HandlerThread handlerThread;
     private Handler handler;
@@ -31,7 +32,7 @@ public class ScreenShareService extends Service {
     private Socket clientSocket;
     private OutputStream outputStream;
     private boolean isRunning = false;
-    private boolean frameSent = false; // 只发1帧
+    private int frameCount = 0;
 
     @Override
     public void onCreate() {
@@ -42,6 +43,9 @@ public class ScreenShareService extends Service {
         handlerThread = new HandlerThread("ScreenCapture");
         handlerThread.start();
         handler = new Handler(handlerThread.getLooper());
+        
+        // 主动GC一下，减少内存压力
+        System.gc();
     }
 
     @Override
@@ -49,7 +53,7 @@ public class ScreenShareService extends Service {
         startNetworkServer();
         startTestImageSender();
         
-        Toast.makeText(this, "只发1帧测试！端口：9998", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "修复版已启动！端口：9998", Toast.LENGTH_SHORT).show();
         return START_STICKY;
     }
 
@@ -58,19 +62,23 @@ public class ScreenShareService extends Service {
             try {
                 serverSocket = new ServerSocket(PORT);
                 isRunning = true;
-                frameSent = false; // 每次新连接重置标志
                 
                 while (isRunning) {
                     try {
+                        // 每次新连接前，彻底关闭旧连接
+                        closeConnectionQuietly();
+                        
                         clientSocket = serverSocket.accept();
                         outputStream = clientSocket.getOutputStream();
-                        frameSent = false; // 新连接，重新发
-                    } catch (IOException e) {
-                        e.printStackTrace();
+                        frameCount = 0; // 新连接重置计数
+                        
+                    } catch (Throwable t) { // 捕获所有Throwable，包括Error
+                        t.printStackTrace();
+                        try { Thread.sleep(1000); } catch (InterruptedException ie) {}
                     }
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
+            } catch (Throwable t) {
+                t.printStackTrace();
             }
         }).start();
     }
@@ -81,33 +89,58 @@ public class ScreenShareService extends Service {
             public void run() {
                 if (!isRunning) return;
                 
-                // 还没发过帧，就发1帧
-                if (!frameSent && outputStream != null) {
+                if (outputStream != null && clientSocket != null && clientSocket.isConnected()) {
+                    Bitmap testBitmap = null;
                     try {
-                        Bitmap testBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
+                        // 生成测试图片
+                        testBitmap = Bitmap.createBitmap(320, 480, Bitmap.Config.ARGB_8888);
                         testBitmap.eraseColor(Color.RED);
                         
+                        // 压缩
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                        testBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos);
+                        testBitmap.compress(Bitmap.CompressFormat.JPEG, 30, baos);
                         byte[] data = baos.toByteArray();
                         
+                        // 发送
                         byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
                         outputStream.write(sizeBuffer);
                         outputStream.write(data);
                         outputStream.flush();
                         
-                        testBitmap.recycle();
-                        frameSent = true; // 标记已发送，不再发了
+                        frameCount++;
                         
-                    } catch (Exception e) {
-                        e.printStackTrace();
+                    } catch (Throwable t) { // 捕获所有Throwable，包括OOM Error
+                        t.printStackTrace();
+                        closeConnectionQuietly();
+                    } finally {
+                        // 绝对确保Bitmap回收
+                        if (testBitmap != null) {
+                            testBitmap.recycle();
+                        }
+                        // 主动GC
+                        System.gc();
                     }
                 }
                 
-                // 继续循环，但不再发数据
-                handler.postDelayed(this, 1000);
+                handler.postDelayed(this, FRAME_INTERVAL);
             }
         }, 1000);
+    }
+
+    private void closeConnectionQuietly() {
+        try {
+            if (outputStream != null) {
+                outputStream.close();
+            }
+            if (clientSocket != null) {
+                clientSocket.close();
+            }
+        } catch (Throwable t) {
+            // 忽略关闭时的错误
+        } finally {
+            outputStream = null;
+            clientSocket = null;
+        }
     }
 
     @Override
@@ -118,13 +151,18 @@ public class ScreenShareService extends Service {
         if (handlerThread != null) {
             handlerThread.quitSafely();
         }
+        
+        closeConnectionQuietly();
         try {
-            if (outputStream != null) outputStream.close();
-            if (clientSocket != null) clientSocket.close();
-            if (serverSocket != null) serverSocket.close();
-        } catch (IOException e) {
-            e.printStackTrace();
+            if (serverSocket != null) {
+                serverSocket.close();
+            }
+        } catch (Throwable t) {
+            t.printStackTrace();
         }
+        
+        // 最后再GC一次
+        System.gc();
         
         Toast.makeText(this, "服务已停止", Toast.LENGTH_SHORT).show();
     }
@@ -147,16 +185,16 @@ public class ScreenShareService extends Service {
     }
 
     private Notification getNotification() {
-        String status = frameSent ? "已发送1帧" : "等待连接";
+        String status = "已发送: " + frameCount + "帧";
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return new Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle("只发1帧测试")
+                    .setContentTitle("修复版测试")
                     .setContentText(status)
                     .setSmallIcon(android.R.drawable.ic_menu_view)
                     .build();
         }
         return new Notification.Builder(this)
-                .setContentTitle("只发1帧测试")
+                .setContentTitle("修复版测试")
                 .setContentText(status)
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .build();
