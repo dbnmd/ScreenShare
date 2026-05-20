@@ -5,15 +5,19 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.widget.Toast;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 
 public class ScreenShareService extends Service {
 
@@ -27,7 +31,6 @@ public class ScreenShareService extends Service {
     private Socket clientSocket;
     private OutputStream outputStream;
     private boolean isRunning = false;
-    private int connectionCount = 0;
 
     @Override
     public void onCreate() {
@@ -43,6 +46,8 @@ public class ScreenShareService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         startNetworkServer();
+        startTestImageSender();
+        
         Toast.makeText(this, "测试模式已启动！端口：9998", Toast.LENGTH_SHORT).show();
         return START_STICKY;
     }
@@ -55,21 +60,8 @@ public class ScreenShareService extends Service {
                 
                 while (isRunning) {
                     try {
-                        // 关闭旧连接
-                        if (clientSocket != null) {
-                            try { clientSocket.close(); } catch (Exception e) {}
-                        }
-                        
-                        // 等待新连接
                         clientSocket = serverSocket.accept();
-                        connectionCount++;
-                        
-                        // 获取输出流
                         outputStream = clientSocket.getOutputStream();
-                        
-                        // 连接成功了！什么都不做，就保持连接
-                        // 看看能保持多久不断开
-                        
                     } catch (IOException e) {
                         e.printStackTrace();
                     }
@@ -80,6 +72,42 @@ public class ScreenShareService extends Service {
         }).start();
     }
 
+    private void startTestImageSender() {
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!isRunning || outputStream == null) {
+                    handler.postDelayed(this, 100);
+                    return;
+                }
+                
+                try {
+                    // 生成纯红色图片
+                    Bitmap testBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
+                    testBitmap.eraseColor(Color.RED);
+                    
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    testBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos);
+                    byte[] data = baos.toByteArray();
+                    
+                    // 发送：4字节长度 + 数据
+                    byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
+                    outputStream.write(sizeBuffer);
+                    outputStream.write(data);
+                    outputStream.flush();
+                    
+                    testBitmap.recycle();
+                    
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                
+                // 每秒发1帧
+                handler.postDelayed(this, 1000);
+            }
+        }, 1000);
+    }
+
     @Override
     public void onDestroy() {
         super.onDestroy();
@@ -88,7 +116,6 @@ public class ScreenShareService extends Service {
         if (handlerThread != null) {
             handlerThread.quitSafely();
         }
-        
         try {
             if (outputStream != null) outputStream.close();
             if (clientSocket != null) clientSocket.close();
@@ -121,13 +148,13 @@ public class ScreenShareService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return new Notification.Builder(this, CHANNEL_ID)
                     .setContentTitle("测试模式")
-                    .setContentText("连接次数: " + connectionCount)
+                    .setContentText("端口：9998")
                     .setSmallIcon(android.R.drawable.ic_menu_view)
                     .build();
         }
         return new Notification.Builder(this)
                 .setContentTitle("测试模式")
-                .setContentText("连接次数: " + connectionCount)
+                .setContentText("端口：9998")
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .build();
     }
