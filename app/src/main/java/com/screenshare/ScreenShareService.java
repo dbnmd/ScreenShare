@@ -24,15 +24,18 @@ public class ScreenShareService extends Service {
     private static final String CHANNEL_ID = "ScreenShareChannel";
     private static final int NOTIFICATION_ID = 1;
     private static final int PORT = 9998;
-    private static final long FRAME_INTERVAL = 2000; // 改成2秒1帧，更慢更稳
+    private static final long FRAME_INTERVAL = 1000; // 1秒1帧
     
     private HandlerThread handlerThread;
     private Handler handler;
     private ServerSocket serverSocket;
-    private Socket clientSocket;
-    private OutputStream outputStream;
-    private boolean isRunning = false;
-    private int frameCount = 0;
+    
+    // 加volatile！确保跨线程可见！
+    private volatile Socket clientSocket;
+    private volatile OutputStream outputStream;
+    
+    private volatile boolean isRunning = false;
+    private volatile int frameCount = 0;
 
     @Override
     public void onCreate() {
@@ -44,7 +47,6 @@ public class ScreenShareService extends Service {
         handlerThread.start();
         handler = new Handler(handlerThread.getLooper());
         
-        // 主动GC一下，减少内存压力
         System.gc();
     }
 
@@ -53,7 +55,7 @@ public class ScreenShareService extends Service {
         startNetworkServer();
         startTestImageSender();
         
-        Toast.makeText(this, "修复版已启动！端口：9998", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "volatile修复版已启动！端口：9998", Toast.LENGTH_SHORT).show();
         return START_STICKY;
     }
 
@@ -65,14 +67,18 @@ public class ScreenShareService extends Service {
                 
                 while (isRunning) {
                     try {
-                        // 每次新连接前，彻底关闭旧连接
+                        // 关闭旧连接
                         closeConnectionQuietly();
                         
+                        // 等待新连接
                         clientSocket = serverSocket.accept();
                         outputStream = clientSocket.getOutputStream();
-                        frameCount = 0; // 新连接重置计数
+                        frameCount = 0;
                         
-                    } catch (Throwable t) { // 捕获所有Throwable，包括Error
+                        // 连接成功，更新通知
+                        updateNotification();
+                        
+                    } catch (Throwable t) {
                         t.printStackTrace();
                         try { Thread.sleep(1000); } catch (InterruptedException ie) {}
                     }
@@ -89,14 +95,15 @@ public class ScreenShareService extends Service {
             public void run() {
                 if (!isRunning) return;
                 
+                // 现在有volatile了，能看到最新值！
                 if (outputStream != null && clientSocket != null && clientSocket.isConnected()) {
                     Bitmap testBitmap = null;
                     try {
-                        // 生成测试图片
+                        // 生成测试图片：颜色随帧号变化
                         testBitmap = Bitmap.createBitmap(320, 480, Bitmap.Config.ARGB_8888);
-                        testBitmap.eraseColor(Color.RED);
+                        float hue = (frameCount * 5) % 360;
+                        testBitmap.eraseColor(Color.HSVToColor(255, new float[]{hue, 0.8f, 0.8f}));
                         
-                        // 压缩
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
                         testBitmap.compress(Bitmap.CompressFormat.JPEG, 30, baos);
                         byte[] data = baos.toByteArray();
@@ -108,23 +115,30 @@ public class ScreenShareService extends Service {
                         outputStream.flush();
                         
                         frameCount++;
+                        updateNotification(); // 每发一帧更新通知
                         
-                    } catch (Throwable t) { // 捕获所有Throwable，包括OOM Error
+                    } catch (Throwable t) {
                         t.printStackTrace();
                         closeConnectionQuietly();
                     } finally {
-                        // 绝对确保Bitmap回收
                         if (testBitmap != null) {
                             testBitmap.recycle();
                         }
-                        // 主动GC
                         System.gc();
                     }
                 }
                 
                 handler.postDelayed(this, FRAME_INTERVAL);
             }
-        }, 1000);
+        }, 500);
+    }
+
+    private void updateNotification() {
+        // 在主线程更新通知
+        new Handler(getMainLooper()).post(() -> {
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.notify(NOTIFICATION_ID, getNotification());
+        });
     }
 
     private void closeConnectionQuietly() {
@@ -136,7 +150,7 @@ public class ScreenShareService extends Service {
                 clientSocket.close();
             }
         } catch (Throwable t) {
-            // 忽略关闭时的错误
+            // 忽略
         } finally {
             outputStream = null;
             clientSocket = null;
@@ -161,7 +175,6 @@ public class ScreenShareService extends Service {
             t.printStackTrace();
         }
         
-        // 最后再GC一次
         System.gc();
         
         Toast.makeText(this, "服务已停止", Toast.LENGTH_SHORT).show();
@@ -185,16 +198,19 @@ public class ScreenShareService extends Service {
     }
 
     private Notification getNotification() {
-        String status = "已发送: " + frameCount + "帧";
+        String status = clientSocket != null && clientSocket.isConnected() 
+            ? "已连接 | 已发送: " + frameCount + "帧" 
+            : "等待连接";
+            
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return new Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle("修复版测试")
+                    .setContentTitle("volatile修复版")
                     .setContentText(status)
                     .setSmallIcon(android.R.drawable.ic_menu_view)
                     .build();
         }
         return new Notification.Builder(this)
-                .setContentTitle("修复版测试")
+                .setContentTitle("volatile修复版")
                 .setContentText(status)
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .build();
