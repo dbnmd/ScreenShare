@@ -86,7 +86,6 @@ public class ScreenShareService extends Service {
     private void requestIgnoreBatteryOptimization() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
                 Intent intent = new Intent(
                     android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                     android.net.Uri.parse("package:" + getPackageName())
