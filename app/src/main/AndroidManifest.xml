@@ -2,14 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 全量权限，避免权限拦截 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 允许端口绑定 -->
+    <uses-permission android:name="android.permission.INTERNET" android:maxSdkVersion="34" />
 
     <application
         android:allowBackup="true"
@@ -18,7 +22,8 @@
         android:roundIcon="@android:drawable/ic_menu_camera"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
-        android:persistent="true">
+        android:persistent="true"
+        android:usesCleartextTraffic="true"> <!-- 允许明文网络请求 -->
 
         <activity
             android:name=".MainActivity"
@@ -29,7 +34,6 @@
             </intent-filter>
         </activity>
 
-        <!-- 1像素保活Activity -->
         <activity
             android:name=".KeepAliveActivity"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
