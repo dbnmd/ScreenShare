@@ -31,6 +31,7 @@ public class ScreenShareService extends Service {
     private Socket clientSocket;
     private OutputStream outputStream;
     private boolean isRunning = false;
+    private boolean frameSent = false; // 只发1帧
 
     @Override
     public void onCreate() {
@@ -48,7 +49,7 @@ public class ScreenShareService extends Service {
         startNetworkServer();
         startTestImageSender();
         
-        Toast.makeText(this, "测试模式已启动！端口：9998", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "只发1帧测试！端口：9998", Toast.LENGTH_SHORT).show();
         return START_STICKY;
     }
 
@@ -57,11 +58,13 @@ public class ScreenShareService extends Service {
             try {
                 serverSocket = new ServerSocket(PORT);
                 isRunning = true;
+                frameSent = false; // 每次新连接重置标志
                 
                 while (isRunning) {
                     try {
                         clientSocket = serverSocket.accept();
                         outputStream = clientSocket.getOutputStream();
+                        frameSent = false; // 新连接，重新发
                     } catch (IOException e) {
                         e.printStackTrace();
                     }
@@ -76,33 +79,32 @@ public class ScreenShareService extends Service {
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (!isRunning || outputStream == null) {
-                    handler.postDelayed(this, 100);
-                    return;
+                if (!isRunning) return;
+                
+                // 还没发过帧，就发1帧
+                if (!frameSent && outputStream != null) {
+                    try {
+                        Bitmap testBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
+                        testBitmap.eraseColor(Color.RED);
+                        
+                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                        testBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos);
+                        byte[] data = baos.toByteArray();
+                        
+                        byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
+                        outputStream.write(sizeBuffer);
+                        outputStream.write(data);
+                        outputStream.flush();
+                        
+                        testBitmap.recycle();
+                        frameSent = true; // 标记已发送，不再发了
+                        
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
                 }
                 
-                try {
-                    // 生成纯红色图片
-                    Bitmap testBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
-                    testBitmap.eraseColor(Color.RED);
-                    
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    testBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos);
-                    byte[] data = baos.toByteArray();
-                    
-                    // 发送：4字节长度 + 数据
-                    byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
-                    outputStream.write(sizeBuffer);
-                    outputStream.write(data);
-                    outputStream.flush();
-                    
-                    testBitmap.recycle();
-                    
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-                
-                // 每秒发1帧
+                // 继续循环，但不再发数据
                 handler.postDelayed(this, 1000);
             }
         }, 1000);
@@ -145,16 +147,17 @@ public class ScreenShareService extends Service {
     }
 
     private Notification getNotification() {
+        String status = frameSent ? "已发送1帧" : "等待连接";
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return new Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle("测试模式")
-                    .setContentText("端口：9998")
+                    .setContentTitle("只发1帧测试")
+                    .setContentText(status)
                     .setSmallIcon(android.R.drawable.ic_menu_view)
                     .build();
         }
         return new Notification.Builder(this)
-                .setContentTitle("测试模式")
-                .setContentText("端口：9998")
+                .setContentTitle("只发1帧测试")
+                .setContentText(status)
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .build();
     }
