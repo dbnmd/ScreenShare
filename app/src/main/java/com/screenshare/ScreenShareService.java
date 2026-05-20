@@ -3,6 +3,7 @@ package com.screenshare;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -35,20 +36,28 @@ public class ScreenShareService extends Service {
     
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+    private Thread heartbeatThread;
 
     @Override
     public void onCreate() {
         super.onCreate();
         mainHandler = new Handler(getMainLooper());
         createNotificationChannel();
+        
+        // 申请忽略电池优化（代码里动态申请）
+        requestIgnoreBatteryOptimization();
+        
+        // 启动前台服务，用媒体类型（比specialUse优先级高）
         startForeground(NOTIFICATION_ID, getNotification());
         
+        // 超级锁
         try {
             PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
             wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK, 
+                PowerManager.PARTIAL_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE, 
                 "ScreenShare::WakeLock"
             );
+            wakeLock.setReferenceCounted(false);
             wakeLock.acquire();
             
             WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -56,6 +65,7 @@ public class ScreenShareService extends Service {
                 WifiManager.WIFI_MODE_FULL_HIGH_PERF, 
                 "ScreenShare::WifiLock"
             );
+            wifiLock.setReferenceCounted(false);
             wifiLock.acquire();
         } catch (Exception e) {
             showToast("后台锁获取失败: " + e.getMessage());
@@ -67,9 +77,44 @@ public class ScreenShareService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         startNetworkServer();
         startTestImageSender();
+        startHeartbeat(); // 启动心跳，防止网络断
         
         showToast("服务已启动！端口：9998");
-        return START_REDELIVER_INTENT;
+        return START_STICKY; // 改成START_STICKY，被杀后自动重启
+    }
+
+    private void requestIgnoreBatteryOptimization() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                Intent intent = new Intent(
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    android.net.Uri.parse("package:" + getPackageName())
+                );
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void startHeartbeat() {
+        heartbeatThread = new Thread(() -> {
+            while (isRunning) {
+                try {
+                    if (outputStream != null && clientSocket != null && clientSocket.isConnected()) {
+                        // 发送1字节心跳，防止华为断TCP
+                        outputStream.write(0xFF);
+                        outputStream.flush();
+                    }
+                    Thread.sleep(1000); // 每秒跳一次
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+        heartbeatThread.start();
     }
 
     private void startNetworkServer() {
@@ -80,11 +125,14 @@ public class ScreenShareService extends Service {
                 }
                 
                 serverSocket = new ServerSocket(PORT);
+                serverSocket.setReuseAddress(true);
                 isRunning = true;
                 
                 while (isRunning) {
                     try {
                         clientSocket = serverSocket.accept();
+                        clientSocket.setTcpNoDelay(true);
+                        clientSocket.setKeepAlive(true);
                         outputStream = clientSocket.getOutputStream();
                         frameCount = 0;
                         
@@ -201,8 +249,11 @@ public class ScreenShareService extends Service {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
                     "屏幕共享服务",
-                    NotificationManager.IMPORTANCE_HIGH
+                    NotificationManager.IMPORTANCE_MAX // 最高优先级！
             );
+            channel.setImportance(NotificationManager.IMPORTANCE_MAX);
+            channel.enableVibration(false);
+            channel.enableLights(false);
             NotificationManager manager = getSystemService(NotificationManager.class);
             manager.createNotificationChannel(channel);
         }
@@ -213,19 +264,31 @@ public class ScreenShareService extends Service {
             ? "已发送: " + frameCount + "帧" 
             : "等待连接";
             
+        // 点击通知回到APP
+        Intent intent = new Intent(this, MainActivity.class);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+            
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return new Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle("屏幕共享")
+                    .setContentTitle("屏幕共享 - 正在运行")
                     .setContentText(status)
                     .setSmallIcon(android.R.drawable.ic_menu_view)
+                    .setContentIntent(pendingIntent)
                     .setOngoing(true)
+                    .setPriority(Notification.PRIORITY_MAX)
+                    .setCategory(Notification.CATEGORY_SERVICE)
                     .build();
         }
         return new Notification.Builder(this)
-                .setContentTitle("屏幕共享")
+                .setContentTitle("屏幕共享 - 正在运行")
                 .setContentText(status)
                 .setSmallIcon(android.R.drawable.ic_menu_view)
+                .setContentIntent(pendingIntent)
                 .setOngoing(true)
+                .setPriority(Notification.PRIORITY_MAX)
                 .build();
     }
 }
