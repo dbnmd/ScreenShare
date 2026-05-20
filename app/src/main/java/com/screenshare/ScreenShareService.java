@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -42,7 +43,7 @@ public class ScreenShareService extends Service {
     private Socket clientSocket;
     private OutputStream outputStream;
     private boolean isRunning = false;
-    private long lastFrameTime = 0;
+    private int frameCount = 0;
 
     @Override
     public void onCreate() {
@@ -66,6 +67,7 @@ public class ScreenShareService extends Service {
             
             startNetworkServer();
             startScreenCapture();
+            startFrameChecker(); // 加一个帧率检查器
             
             Toast.makeText(this, "屏幕共享已启动！端口：9998", Toast.LENGTH_SHORT).show();
         }
@@ -97,26 +99,20 @@ public class ScreenShareService extends Service {
         DisplayMetrics metrics = new DisplayMetrics();
         wm.getDefaultDisplay().getRealMetrics(metrics);
         
-        // 降低分辨率，确保能正常工作
-        int width = 720;  // 固定720p宽度
-        int height = 1280; // 固定720p高度
+        int width = 720;
+        int height = 1280;
         int density = metrics.densityDpi;
         
-        // 使用ImageFormat.JPEG格式不行，必须用RGBA_8888
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
         
-        // 确保回调在handler线程执行
         imageReader.setOnImageAvailableListener(reader -> {
-            if (!isRunning || outputStream == null) return;
+            frameCount++; // 每回调一次计数+1
             
-            // 控制帧率：最多5帧/秒
-            long now = System.currentTimeMillis();
-            if (now - lastFrameTime < 200) return;
-            lastFrameTime = now;
+            if (!isRunning || outputStream == null) return;
             
             Image image = null;
             try {
-                image = reader.acquireNextImage(); // 用acquireNextImage而不是acquireLatestImage
+                image = reader.acquireNextImage();
                 if (image != null) {
                     processImage(image);
                 }
@@ -129,20 +125,54 @@ public class ScreenShareService extends Service {
             }
         }, handler);
         
-        // 延迟一点创建VirtualDisplay，确保ImageReader准备好
         handler.postDelayed(() -> {
             try {
                 virtualDisplay = mediaProjection.createVirtualDisplay(
                     "ScreenShare",
                     width, height, density,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC, // 换个标志试试
                     imageReader.getSurface(),
                     null, handler
                 );
             } catch (Exception e) {
                 e.printStackTrace();
             }
-        }, 500);
+        }, 1000);
+    }
+
+    private void startFrameChecker() {
+        // 每秒检查一次有没有采集到帧
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!isRunning) return;
+                
+                android.util.Log.d("ScreenShare", "采集到的帧数：" + frameCount);
+                
+                // 如果没有采集到帧，发一个测试红色图片
+                if (frameCount == 0 && outputStream != null) {
+                    try {
+                        Bitmap testBitmap = Bitmap.createBitmap(720, 1280, Bitmap.Config.ARGB_8888);
+                        testBitmap.eraseColor(Color.RED);
+                        
+                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                        testBitmap.compress(Bitmap.CompressFormat.JPEG, 40, baos);
+                        byte[] data = baos.toByteArray();
+                        
+                        byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
+                        outputStream.write(sizeBuffer);
+                        outputStream.write(data);
+                        outputStream.flush();
+                        
+                        testBitmap.recycle();
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+                
+                handler.postDelayed(this, 1000);
+            }
+        }, 1000);
     }
 
     private void processImage(Image image) {
@@ -154,7 +184,6 @@ public class ScreenShareService extends Service {
             int width = image.getWidth();
             int height = image.getHeight();
             
-            // 创建Bitmap
             Bitmap bitmap = Bitmap.createBitmap(
                 rowStride / pixelStride,
                 height,
@@ -162,27 +191,22 @@ public class ScreenShareService extends Service {
             );
             bitmap.copyPixelsFromBuffer(buffer);
             
-            // 裁剪到正确尺寸
             Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, width, height);
             
-            // 压缩为JPEG
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             cropped.compress(Bitmap.CompressFormat.JPEG, 40, baos);
             byte[] data = baos.toByteArray();
             
-            // 发送数据：4字节长度 + 数据
             byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
             outputStream.write(sizeBuffer);
             outputStream.write(data);
             outputStream.flush();
             
-            // 回收Bitmap
             bitmap.recycle();
             cropped.recycle();
             
         } catch (Exception e) {
             e.printStackTrace();
-            // 出错不崩溃，只是重置连接
             resetConnection();
         }
     }
