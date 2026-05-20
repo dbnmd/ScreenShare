@@ -6,20 +6,13 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.PixelFormat;
-import android.hardware.display.DisplayManager;
-import android.hardware.display.VirtualDisplay;
-import android.media.Image;
-import android.media.ImageReader;
-import android.media.projection.MediaProjection;
-import android.media.projection.MediaProjectionManager;
+import android.graphics.Paint;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
-import android.util.DisplayMetrics;
-import android.view.WindowManager;
 import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -34,19 +27,15 @@ public class ScreenShareService extends Service {
     private static final String CHANNEL_ID = "ScreenShareChannel";
     private static final int NOTIFICATION_ID = 1;
     private static final int PORT = 9998;
-    private static final long FRAME_INTERVAL = 500; // 2帧/秒，超慢但超稳
+    private static final long FRAME_INTERVAL = 500; // 2帧/秒
     
-    private MediaProjection mediaProjection;
-    private VirtualDisplay virtualDisplay;
-    private ImageReader imageReader;
     private HandlerThread handlerThread;
     private Handler handler;
     private ServerSocket serverSocket;
     private Socket clientSocket;
     private OutputStream outputStream;
     private boolean isRunning = false;
-    private long lastFrameTime = 0;
-    private int frameCount = 0;
+    private int frameNumber = 0;
 
     @Override
     public void onCreate() {
@@ -61,18 +50,10 @@ public class ScreenShareService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && intent.hasExtra("resultCode") && intent.hasExtra("data")) {
-            int resultCode = intent.getIntExtra("resultCode", -1);
-            Intent data = intent.getParcelableExtra("data");
-            
-            MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-            mediaProjection = manager.getMediaProjection(resultCode, data);
-            
-            startNetworkServer();
-            startScreenCapture();
-            
-            Toast.makeText(this, "屏幕共享已启动！端口：9998", Toast.LENGTH_SHORT).show();
-        }
+        startNetworkServer();
+        startImageGenerator();
+        
+        Toast.makeText(this, "测试模式已启动！端口：9998", Toast.LENGTH_SHORT).show();
         return START_STICKY;
     }
 
@@ -84,19 +65,16 @@ public class ScreenShareService extends Service {
                 
                 while (isRunning) {
                     try {
-                        // 关闭旧连接
                         if (clientSocket != null) {
                             try { clientSocket.close(); } catch (Exception e) {}
                         }
                         
                         clientSocket = serverSocket.accept();
                         
-                        // Socket优化选项，提升稳定性
                         try {
-                            clientSocket.setTcpNoDelay(true);      // 关闭Nagle算法
-                            clientSocket.setKeepAlive(true);       // 开启保活
-                            clientSocket.setSoTimeout(0);          // 读超时无限大
-                            clientSocket.setSendBufferSize(1024 * 1024); // 增大发送缓冲区
+                            clientSocket.setTcpNoDelay(true);
+                            clientSocket.setKeepAlive(true);
+                            clientSocket.setSendBufferSize(1024 * 1024);
                         } catch (SocketException e) {
                             e.printStackTrace();
                         }
@@ -105,7 +83,6 @@ public class ScreenShareService extends Service {
                         
                     } catch (IOException e) {
                         e.printStackTrace();
-                        // 出错等待1秒再继续
                         try { Thread.sleep(1000); } catch (InterruptedException ie) {}
                     }
                 }
@@ -115,115 +92,71 @@ public class ScreenShareService extends Service {
         }).start();
     }
 
-    private void startScreenCapture() {
-        WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        DisplayMetrics metrics = new DisplayMetrics();
-        wm.getDefaultDisplay().getRealMetrics(metrics);
-        
-        // 超低分辨率：480p，极致减少数据量
-        int width = 480;
-        int height = 800;
-        int density = metrics.densityDpi;
-        
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
-        
-        imageReader.setOnImageAvailableListener(reader -> {
-            frameCount++;
-            
-            // 没有客户端连接就不处理
-            if (!isRunning || outputStream == null || clientSocket == null || !clientSocket.isConnected()) {
-                return;
-            }
-            
-            // 帧率控制：2帧/秒
-            long now = System.currentTimeMillis();
-            if (now - lastFrameTime < FRAME_INTERVAL) return;
-            lastFrameTime = now;
-            
-            Image image = null;
-            try {
-                image = reader.acquireNextImage();
-                if (image != null) {
-                    processImage(image);
+    private void startImageGenerator() {
+        // 完全不用屏幕采集，纯代码生成测试图片
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!isRunning) return;
+                
+                if (outputStream != null && clientSocket != null && clientSocket.isConnected()) {
+                    try {
+                        // 生成一张测试图片：带帧号的彩色图片
+                        Bitmap testBitmap = generateTestImage(480, 800);
+                        
+                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                        testBitmap.compress(Bitmap.CompressFormat.JPEG, 30, baos);
+                        byte[] data = baos.toByteArray();
+                        
+                        // 发送
+                        byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
+                        outputStream.write(sizeBuffer);
+                        outputStream.write(data);
+                        outputStream.flush();
+                        
+                        testBitmap.recycle();
+                        frameNumber++;
+                        
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        resetConnection();
+                    }
                 }
-            } catch (Exception e) {
-                // 捕获所有异常，绝对不崩溃
-                e.printStackTrace();
-            } finally {
-                if (image != null) {
-                    try { image.close(); } catch (Exception e) {}
-                }
-            }
-        }, handler);
-        
-        handler.postDelayed(() -> {
-            try {
-                virtualDisplay = mediaProjection.createVirtualDisplay(
-                    "ScreenShare",
-                    width, height, density,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
-                    imageReader.getSurface(),
-                    null, handler
-                );
-            } catch (Exception e) {
-                e.printStackTrace();
+                
+                handler.postDelayed(this, FRAME_INTERVAL);
             }
         }, 1000);
     }
 
-    private void processImage(Image image) {
-        try {
-            Image.Plane[] planes = image.getPlanes();
-            ByteBuffer buffer = planes[0].getBuffer();
-            int pixelStride = planes[0].getPixelStride();
-            int rowStride = planes[0].getRowStride();
-            int width = image.getWidth();
-            int height = image.getHeight();
-            
-            // 创建Bitmap
-            Bitmap bitmap = Bitmap.createBitmap(
-                rowStride / pixelStride,
-                height,
-                Bitmap.Config.ARGB_8888
-            );
-            bitmap.copyPixelsFromBuffer(buffer);
-            
-            // 裁剪
-            Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, width, height);
-            
-            // 超低质量压缩：20%质量，极致减小体积
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            cropped.compress(Bitmap.CompressFormat.JPEG, 20, baos);
-            byte[] data = baos.toByteArray();
-            
-            // 发送前再检查一遍连接状态
-            if (outputStream != null && clientSocket != null && clientSocket.isConnected()) {
-                // 先发送4字节长度（大端序）
-                byte[] sizeBuffer = ByteBuffer.allocate(4).putInt(data.length).array();
-                outputStream.write(sizeBuffer);
-                outputStream.write(data);
-                outputStream.flush();
-            }
-            
-            // 立即回收，避免OOM
-            bitmap.recycle();
-            cropped.recycle();
-            
-        } catch (Exception e) {
-            // 发送出错只断开连接，不崩溃
-            e.printStackTrace();
-            resetConnection();
-        }
+    private Bitmap generateTestImage(int width, int height) {
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        
+        // 背景色随帧号变化，方便看到动态效果
+        int hue = (frameNumber * 10) % 360;
+        int bgColor = Color.HSVToColor(255, new float[]{hue, 0.8f, 0.8f});
+        canvas.drawColor(bgColor);
+        
+        // 画一个白色的帧号
+        Paint paint = new Paint();
+        paint.setColor(Color.WHITE);
+        paint.setTextSize(100);
+        paint.setTextAlign(Paint.Align.CENTER);
+        canvas.drawText("帧: " + frameNumber, width/2, height/2, paint);
+        
+        // 画一些测试线条
+        paint.setColor(Color.BLACK);
+        paint.setStrokeWidth(5);
+        canvas.drawLine(0, 0, width, height, paint);
+        canvas.drawLine(width, 0, 0, height, paint);
+        
+        return bitmap;
     }
 
     private void resetConnection() {
         try {
-            if (outputStream != null) {
-                outputStream.close();
-            }
-            if (clientSocket != null) {
-                clientSocket.close();
-            }
+            if (outputStream != null) outputStream.close();
+            if (clientSocket != null) clientSocket.close();
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
@@ -237,29 +170,18 @@ public class ScreenShareService extends Service {
         super.onDestroy();
         isRunning = false;
         
-        if (virtualDisplay != null) {
-            try { virtualDisplay.release(); } catch (Exception e) {}
-        }
-        if (imageReader != null) {
-            try { imageReader.close(); } catch (Exception e) {}
-        }
-        if (mediaProjection != null) {
-            try { mediaProjection.stop(); } catch (Exception e) {}
-        }
         if (handlerThread != null) {
-            try { handlerThread.quitSafely(); } catch (Exception e) {}
+            handlerThread.quitSafely();
         }
         
         resetConnection();
         try {
-            if (serverSocket != null) {
-                serverSocket.close();
-            }
+            if (serverSocket != null) serverSocket.close();
         } catch (IOException e) {
             e.printStackTrace();
         }
         
-        Toast.makeText(this, "屏幕共享已停止", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "服务已停止", Toast.LENGTH_SHORT).show();
     }
 
     @Override
@@ -282,13 +204,13 @@ public class ScreenShareService extends Service {
     private Notification getNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return new Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle("屏幕共享中")
+                    .setContentTitle("测试模式")
                     .setContentText("端口：9998")
                     .setSmallIcon(android.R.drawable.ic_menu_view)
                     .build();
         }
         return new Notification.Builder(this)
-                .setContentTitle("屏幕共享中")
+                .setContentTitle("测试模式")
                 .setContentText("端口：9998")
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .build();
