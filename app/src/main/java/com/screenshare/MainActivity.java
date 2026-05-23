@@ -1,3 +1,4 @@
+import android.app.Activity;
 import android.content.Intent;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
@@ -5,16 +6,15 @@ import android.os.Bundle;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.Toast;
-import androidx.appcompat.app.AppCompatActivity;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends Activity {
     private static final int REQUEST_SCREEN_CAPTURE = 1000;
     private MediaProjectionManager mediaProjectionManager;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // 代码创建布局，不用xml文件，不会有R包错误
+        // 代码创建布局，不用任何xml和第三方库
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(64, 64, 64, 64);
@@ -23,9 +23,6 @@ public class MainActivity extends AppCompatActivity {
         startBtn.setTextSize(18);
         layout.addView(startBtn);
         setContentView(layout);
-
-        // 权限自动跳转
-        PermissionJumpUtil.jumpToPermissionSettings(this);
 
         // 初始化录屏管理器
         mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
@@ -55,7 +52,7 @@ public class MainActivity extends AppCompatActivity {
                 startService(serviceIntent);
             }
             Toast.makeText(this, "屏幕共享已启动，端口23456", Toast.LENGTH_SHORT).show();
-            finish(); // 启动服务后自动关闭页面，进后台
+            finish();
         }
     }
 
