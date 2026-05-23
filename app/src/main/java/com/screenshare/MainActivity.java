@@ -1,120 +1,60 @@
-package com.screenshare;
-
-import android.app.Activity;
+import android.Manifest;
 import android.content.Intent;
 import android.media.projection.MediaProjectionManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
-import android.widget.LinearLayout;
-import android.widget.TextView;
 import android.widget.Toast;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.util.Collections;
-import java.util.List;
+import androidx.appcompat.app.AppCompatActivity;
 
-public class MainActivity extends Activity {
-
-    private static final int REQUEST_CODE = 1000;
-    private MediaProjectionManager projectionManager;
-    private boolean isServiceRunning = false;
+public class MainActivity extends AppCompatActivity {
+    private static final int REQUEST_SCREEN_CAPTURE = 1000;
+    private MediaProjectionManager mediaProjectionManager;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main); // 如果你的布局文件名不一样，改这里的R.layout.xxx就行
 
-        projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+        // 权限自动跳转
+        PermissionJumpUtil.jumpToPermissionSettings(this);
 
-        // 创建布局
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(32, 32, 32, 32);
+        // 初始化录屏管理器
+        mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
 
-        // IP显示文本
-        TextView ipText = new TextView(this);
-        ipText.setText("本机IP: " + getLocalIpAddress() + "\n端口: 9998");
-        ipText.setTextSize(18);
-        layout.addView(ipText);
-
-        // 状态显示
-        TextView statusText = new TextView(this);
-        statusText.setText("\n状态: 未启动");
-        statusText.setTextSize(16);
-        layout.addView(statusText);
-
-        // 开始按钮
-        Button startBtn = new Button(this);
-        startBtn.setText("开始共享");
+        // 开始按钮，如果你原来的按钮id不是btn_start，改成自己的按钮id
+        Button startBtn = findViewById(R.id.btn_start);
         startBtn.setOnClickListener(v -> {
-            Intent captureIntent = projectionManager.createScreenCaptureIntent();
-            startActivityForResult(captureIntent, REQUEST_CODE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                Intent captureIntent = mediaProjectionManager.createScreenCaptureIntent();
+                startActivityForResult(captureIntent, REQUEST_SCREEN_CAPTURE);
+            } else {
+                Toast.makeText(this, "安卓版本过低，不支持录屏", Toast.LENGTH_SHORT).show();
+            }
         });
-        layout.addView(startBtn);
-
-        // 停止按钮
-        Button stopBtn = new Button(this);
-        stopBtn.setText("停止共享");
-        stopBtn.setOnClickListener(v -> {
-            stopService();
-            statusText.setText("\n状态: 已停止");
-        });
-        layout.addView(stopBtn);
-
-        // 隐藏按钮
-        Button hideBtn = new Button(this);
-        hideBtn.setText("隐藏到后台");
-        hideBtn.setOnClickListener(v -> {
-            moveTaskToBack(true);
-            Toast.makeText(this, "已隐藏到后台", Toast.LENGTH_SHORT).show();
-        });
-        layout.addView(hideBtn);
-
-        setContentView(layout);
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_CODE && resultCode == RESULT_OK) {
+        if (requestCode == REQUEST_SCREEN_CAPTURE && resultCode == RESULT_OK) {
+            // 启动屏幕共享服务
             Intent serviceIntent = new Intent(this, ScreenShareService.class);
-            serviceIntent.putExtra("resultCode", resultCode);
+            serviceIntent.putExtra("code", resultCode);
             serviceIntent.putExtra("data", data);
-            
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent);
             } else {
                 startService(serviceIntent);
             }
-            
-            isServiceRunning = true;
-            Toast.makeText(this, "屏幕共享服务已启动", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "屏幕共享已启动，端口23456", Toast.LENGTH_SHORT).show();
+            finish(); // 启动服务后自动关闭页面，进后台
         }
     }
 
-    private void stopService() {
-        Intent serviceIntent = new Intent(this, ScreenShareService.class);
-        stopService(serviceIntent);
-        isServiceRunning = false;
-    }
-
-    private String getLocalIpAddress() {
-        try {
-            List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
-            for (NetworkInterface intf : interfaces) {
-                List<InetAddress> addrs = Collections.list(intf.getInetAddresses());
-                for (InetAddress addr : addrs) {
-                    if (!addr.isLoopbackAddress()) {
-                        String sAddr = addr.getHostAddress();
-                        boolean isIPv4 = sAddr.indexOf(':') < 0;
-                        if (isIPv4) {
-                            return sAddr;
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return "获取失败";
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        stopService(new Intent(this, ScreenShareService.class));
     }
 }
