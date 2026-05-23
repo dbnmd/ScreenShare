@@ -1,27 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- ✅ 所有需要的权限 -->
+    <!-- 基础权限，去掉所有高版本才有的权限，兼容所有安卓版本 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="true"
-        android:icon="@android:drawable/ic_menu_gallery" <!-- ✅ 用系统自带图标，不用自己的 -->
+        android:icon="@android:drawable/ic_menu_gallery"
         android:label="屏幕共享"
-        android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" <!-- ✅ 用系统自带主题，不用自己的 -->
-        android:usesCleartextTraffic="true"
-        tools:targetApi="31">
+        android:usesCleartextTraffic="true">
 
-        <!-- MainActivity -->
+        <!-- 主界面 -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -31,13 +23,10 @@
             </intent-filter>
         </activity>
 
-        <!-- ScreenShareService -->
-        <service
-            android:name=".ScreenShareService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
+        <!-- 后台服务 -->
+        <service android:name=".ScreenShareService" android:exported="false" />
 
-        <!-- BootReceiver -->
+        <!-- 开机广播 -->
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
