@@ -1,211 +1,180 @@
-package com.screenshare;
-
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.app.Service;
-import android.content.Context;
 import android.content.Intent;
-import android.hardware.display.DisplayManager;
-import android.hardware.display.VirtualDisplay;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
+import android.media.MediaCodec;
+import android.media.MediaFormat;
 import android.os.Build;
-import android.os.Handler;
 import android.os.IBinder;
-import android.util.DisplayMetrics;
+import android.os.PowerManager;
+import android.net.wifi.WifiManager;
+import androidx.core.app.NotificationCompat;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.widget.Toast;
-
-import java.io.DataOutputStream;
-import java.io.IOException;
+import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
+import java.nio.ByteBuffer;
 
 public class ScreenShareService extends Service {
-    private static final int NOTIFICATION_ID = 1;
-    private static final String CHANNEL_ID = "ScreenShareServiceChannel";
-    // 换成不会被系统占用的端口，避免8080被拦截
-    private static final int SERVER_PORT = 23456;
-    private static final int FPS = 60;
-
-    private MediaProjection mediaProjection;
-    private MediaProjectionManager mediaProjectionManager;
-    private VirtualDisplay virtualDisplay;
+    public static final int SERVER_PORT = 23456;
     private ServerSocket serverSocket;
     private Socket clientSocket;
-    private DataOutputStream outputStream;
+    private OutputStream outputStream;
+    private MediaProjection mediaProjection;
+    private MediaCodec encoder;
     private boolean isStreaming = false;
-    private String clientIP = null;
-    private Handler mainHandler;
+
+    // 保活相关
+    private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
+    private static final int NOTIFICATION_ID = 10086;
+    private static final String CHANNEL_ID = "screen_share_channel";
 
     @Override
     public void onCreate() {
         super.onCreate();
-        mainHandler = new Handler(getMainLooper());
-        createNotificationChannel();
-        
-        // 申请忽略电池优化
-        requestIgnoreBatteryOptimization();
-        
-        // 强制启动前台服务，保证服务不被杀
-        startForeground(NOTIFICATION_ID, getNotification());
-        Toast.makeText(this, "服务已启动，端口：23456", Toast.LENGTH_LONG).show();
+        // 1. 保活锁初始化
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ScreenShare::WakeLock");
+        wakeLock.acquire(10*60*1000L);
+        WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+        wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "ScreenShare::WifiLock");
+        wifiLock.acquire();
 
-        // 保活代码
-        KeepAliveActivity.register(this);
-
-        mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        // 启动服务后立刻启动Socket监听
-        startServer();
-    }
-
-    private void requestIgnoreBatteryOptimization() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-            intent.setData(android.net.Uri.parse("package:" + getPackageName()));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-        }
-    }
-
-    private void createNotificationChannel() {
+        // 2. 前台服务通知
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "屏幕共享服务",
-                NotificationManager.IMPORTANCE_HIGH // 改成高优先级，避免被系统杀掉
+                    CHANNEL_ID,
+                    "屏幕共享服务",
+                    NotificationManager.IMPORTANCE_LOW
             );
-            channel.setShowBadge(true);
-            channel.setSound(null, null);
+            channel.setDescription("屏幕共享后台运行保活");
             NotificationManager manager = getSystemService(NotificationManager.class);
             manager.createNotificationChannel(channel);
         }
-    }
-
-    private Notification getNotification() {
-        Intent notificationIntent = new Intent(this, MainActivity.class);
-        android.app.PendingIntent pendingIntent = android.app.PendingIntent.getActivity(
-            this, 0, notificationIntent, 
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? android.app.PendingIntent.FLAG_IMMUTABLE : 0
-        );
-
-        return new Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("屏幕共享服务运行中")
-                .setContentText("端口：23456 | 点击打开APP")
-                .setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setContentIntent(pendingIntent)
-                .setOngoing(true)
-                .setPriority(Notification.PRIORITY_MAX) // 最高优先级
+        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("屏幕共享正在运行")
+                .setContentText("端口23456，等待客户端连接")
+                .setSmallIcon(R.drawable.ic_launcher) // 换成你自己的图标id
+                .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
-    }
+        startForeground(NOTIFICATION_ID, notification);
 
-    private void updateNotification() {
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        manager.notify(NOTIFICATION_ID, getNotification());
+        // 3. 启动服务端线程
+        new Thread(this::startServer).start();
     }
 
     private void startServer() {
-        new Thread(() -> {
-            try {
-                // 绑定所有网络接口，避免只绑定本地回环
-                serverSocket = new ServerSocket(SERVER_PORT, 50);
-                appendLog("✅ 服务器启动成功！端口：" + SERVER_PORT + "，可以连接了");
-                mainHandler.post(() -> Toast.makeText(this, "服务器启动成功，端口23456", Toast.LENGTH_LONG).show());
-                
-                while (!serverSocket.isClosed()) {
-                    try {
-                        clientSocket = serverSocket.accept();
-                        clientIP = clientSocket.getInetAddress().getHostAddress();
-                        appendLog("✅ 客户端连接成功：" + clientIP);
-                        outputStream = new DataOutputStream(clientSocket.getOutputStream());
-                        
-                        if (!isStreaming) {
-                            mainHandler.post(() -> startScreenStream());
-                        }
-                    } catch (IOException e) {
-                        if (!serverSocket.isClosed()) {
-                            appendLog("❌ 接受连接失败：" + e.getMessage());
-                        }
-                    }
-                }
-            } catch (IOException e) {
-                appendLog("❌ 服务器启动失败：" + e.getMessage());
-                mainHandler.post(() -> Toast.makeText(this, "服务器启动失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
-                e.printStackTrace();
-            }
-        }).start();
-    }
-
-    private void startScreenStream() {
-        if (isStreaming || mediaProjectionManager == null) return;
-        Intent captureIntent = mediaProjectionManager.createScreenCaptureIntent();
-        captureIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(captureIntent);
-    }
-
-    public void handleCaptureResult(int resultCode, Intent data) {
-        mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
-        if (mediaProjection == null) return;
-
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
-        int density = metrics.densityDpi;
-        int width = metrics.widthPixels;
-        int height = metrics.heightPixels;
-
-        // 这里保留你原来的ScreenEncoder逻辑，没有的话先注释也不影响连接测试
-        // Surface encoderSurface = yourEncoder.getSurface();
-        virtualDisplay = mediaProjection.createVirtualDisplay(
-            "ScreenShare",
-            width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            null, // 测试连接的时候先传null，不影响端口监听
-            null,
-            null
-        );
-        isStreaming = true;
-        updateNotification();
-        appendLog("✅ 屏幕共享已启动");
-    }
-
-    private void stopScreenStream() {
-        isStreaming = false;
-        if (virtualDisplay != null) {
-            virtualDisplay.release();
-            virtualDisplay = null;
-        }
-        if (mediaProjection != null) {
-            mediaProjection.stop();
-            mediaProjection = null;
-        }
         try {
-            if (outputStream != null) outputStream.close();
-            if (clientSocket != null) clientSocket.close();
-        } catch (IOException e) {}
-        outputStream = null;
-        clientSocket = null;
-        clientIP = null;
-        updateNotification();
-        appendLog("屏幕共享已停止");
+            serverSocket = new ServerSocket(SERVER_PORT, 50);
+            showToast("✅ 服务器启动成功，端口23456");
+            while (!serverSocket.isClosed()) {
+                try {
+                    clientSocket = serverSocket.accept();
+                    clientSocket.setSoTimeout(15000);
+                    clientSocket.setTcpNoDelay(true);
+                    clientSocket.setSendBufferSize(1024 * 1024);
+                    outputStream = clientSocket.getOutputStream();
+
+                    // ✅ 连接成功立刻发4字节测试数据，避免客户端卡死
+                    outputStream.write(new byte[]{0x00, 0x00, 0x00, 0x00});
+                    outputStream.flush();
+
+                    showToast("✅ 客户端连接成功");
+                    if (!isStreaming) {
+                        // 初始化录屏编码
+                        mediaProjection = ((MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE))
+                                .getMediaProjection(getSharedPreferences("config", MODE_PRIVATE).getInt("code", -1),
+                                        (Intent) getSharedPreferences("config", MODE_PRIVATE).getParcelable("data"));
+                        initEncoder();
+                        isStreaming = true;
+                        new Thread(this::encodeLoop).start();
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        } catch (Exception e) {
+            showToast("❌ 服务器启动失败：" + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
-    private void appendLog(String message) {
-        String time = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date());
-        String logMsg = "[" + time + "] " + message + "\n";
-        System.out.println(logMsg); // 同时打印到控制台，方便调试
-        // 如果你有MainActivity的日志显示就放开下面的
-        // mainHandler.post(() -> MainActivity.addLog(logMsg));
+    private void initEncoder() throws Exception {
+        MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 720, 1280);
+        format.setInteger(MediaFormat.KEY_BIT_RATE, 2000000); // 2Mbps码率
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, 30); // 30帧
+        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaFormat.COLOR_FormatSurface);
+        encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+        encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        mediaProjection.createVirtualDisplay("ScreenShare",
+                720, 1280, getResources().getDisplayMetrics().densityDpi,
+                0, encoder.createInputSurface(), null, null);
+        encoder.start();
+    }
+
+    private void encodeLoop() {
+        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+        try {
+            while (isStreaming && clientSocket != null && !clientSocket.isClosed()) {
+                int outputBufferId = encoder.dequeueOutputBuffer(bufferInfo, 10000);
+                if (outputBufferId >= 0) {
+                    ByteBuffer outputBuffer = encoder.getOutputBuffer(outputBufferId);
+                    if (outputBuffer != null && bufferInfo.size > 0) {
+                        byte[] data = new byte[bufferInfo.size];
+                        outputBuffer.get(data);
+                        // 先发4字节长度，再发数据，和客户端协议对应
+                        outputStream.write(ByteBuffer.allocate(4).putInt(bufferInfo.size).array());
+                        outputStream.write(data);
+                        outputStream.flush();
+                    }
+                    encoder.releaseOutputBuffer(outputBufferId, false);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            try {
+                clientSocket.close();
+            } catch (Exception ex) {}
+        }
+    }
+
+    private void showToast(String msg) {
+        android.os.Handler mainHandler = new android.os.Handler(getMainLooper());
+        mainHandler.post(() -> Toast.makeText(ScreenShareService.this, msg, Toast.LENGTH_SHORT).show());
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        // 保存录屏权限数据
+        if (intent != null && intent.hasExtra("code") && intent.hasExtra("data")) {
+            getSharedPreferences("config", MODE_PRIVATE).edit()
+                    .putInt("code", intent.getIntExtra("code", -1))
+                    .putParcelable("data", intent.getParcelableExtra("data"))
+                    .apply();
+        }
+        return START_STICKY; // 服务被杀自动重启
     }
 
     @Override
     public void onDestroy() {
-        stopScreenStream();
-        try {
-            if (serverSocket != null) serverSocket.close();
-        } catch (IOException e) {}
         super.onDestroy();
+        isStreaming = false;
+        try {
+            if (encoder != null) encoder.stop();
+            if (mediaProjection != null) mediaProjection.stop();
+            if (clientSocket != null) clientSocket.close();
+            if (serverSocket != null) serverSocket.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        // 释放保活锁
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
+        stopForeground(true);
     }
 
     @Override
