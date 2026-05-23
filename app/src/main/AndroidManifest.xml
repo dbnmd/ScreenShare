@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- ✅ 所有需要的权限，缺一个就可能闪退 -->
+    <!-- ✅ 所有需要的权限 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
@@ -14,14 +14,14 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:drawable/ic_menu_gallery" <!-- ✅ 用系统自带图标，不用自己的 -->
         android:label="屏幕共享"
         android:supportsRtl="true"
-        android:theme="@style/Theme.ScreenShare"
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" <!-- ✅ 用系统自带主题，不用自己的 -->
         android:usesCleartextTraffic="true"
         tools:targetApi="31">
 
-        <!-- ✅ MainActivity注册，必须加exported="true"，安卓12+不加就闪退 -->
+        <!-- MainActivity -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -31,13 +31,13 @@
             </intent-filter>
         </activity>
 
-        <!-- ✅ ScreenShareService注册 -->
+        <!-- ScreenShareService -->
         <service
             android:name=".ScreenShareService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
-        <!-- ✅ BootReceiver注册 -->
+        <!-- BootReceiver -->
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
