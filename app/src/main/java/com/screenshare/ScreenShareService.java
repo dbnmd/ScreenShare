@@ -4,6 +4,7 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
 import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
@@ -112,7 +113,7 @@ public class ScreenShareService extends Service {
         format.setInteger(MediaFormat.KEY_BIT_RATE, 2000000); // 2Mbps码率
         format.setInteger(MediaFormat.KEY_FRAME_RATE, 30); // 30帧
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaFormat.COLOR_FORMAT_SURFACE); // ✅ 修正常量名，大写F
+        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface); // ✅ 正确常量位置
         encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         mediaProjection.createVirtualDisplay("ScreenShare",
