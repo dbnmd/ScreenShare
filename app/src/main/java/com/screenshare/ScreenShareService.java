@@ -1,16 +1,18 @@
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
-import android.media.projection.MediaProjection;
-import android.media.projection.MediaProjectionManager;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
+import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.Parcelable;
 import android.os.PowerManager;
 import android.net.wifi.WifiManager;
 import androidx.core.app.NotificationCompat;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.widget.Toast;
 import java.io.OutputStream;
 import java.net.ServerSocket;
@@ -25,6 +27,10 @@ public class ScreenShareService extends Service {
     private MediaProjection mediaProjection;
     private MediaCodec encoder;
     private boolean isStreaming = false;
+
+    // 全局静态存录屏权限数据，不用序列化，不会报错
+    public static int screenCode = -1;
+    public static Parcelable screenData = null;
 
     // 保活相关
     private PowerManager.WakeLock wakeLock;
@@ -43,7 +49,7 @@ public class ScreenShareService extends Service {
         wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "ScreenShare::WifiLock");
         wifiLock.acquire();
 
-        // 2. 前台服务通知
+        // 2. 前台服务通知，用系统图标，不会有R包错误
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
@@ -57,7 +63,7 @@ public class ScreenShareService extends Service {
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("屏幕共享正在运行")
                 .setContentText("端口23456，等待客户端连接")
-                .setSmallIcon(R.drawable.ic_launcher) // 换成你自己的图标id
+                .setSmallIcon(android.R.drawable.ic_menu_gallery) // 用系统自带图标，不用自己的
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
         startForeground(NOTIFICATION_ID, notification);
@@ -83,11 +89,10 @@ public class ScreenShareService extends Service {
                     outputStream.flush();
 
                     showToast("✅ 客户端连接成功");
-                    if (!isStreaming) {
-                        // 初始化录屏编码
+                    if (!isStreaming && screenCode != -1 && screenData != null) {
+                        // 初始化录屏编码，用全局静态数据，不用SP存Parcelable
                         mediaProjection = ((MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE))
-                                .getMediaProjection(getSharedPreferences("config", MODE_PRIVATE).getInt("code", -1),
-                                        (Intent) getSharedPreferences("config", MODE_PRIVATE).getParcelable("data"));
+                                .getMediaProjection(screenCode, (Intent) screenData);
                         initEncoder();
                         isStreaming = true;
                         new Thread(this::encodeLoop).start();
@@ -107,7 +112,7 @@ public class ScreenShareService extends Service {
         format.setInteger(MediaFormat.KEY_BIT_RATE, 2000000); // 2Mbps码率
         format.setInteger(MediaFormat.KEY_FRAME_RATE, 30); // 30帧
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaFormat.COLOR_FormatSurface);
+        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaFormat.COLOR_FORMAT_SURFACE); // ✅ 修正常量名，大写F
         encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         mediaProjection.createVirtualDisplay("ScreenShare",
@@ -149,12 +154,10 @@ public class ScreenShareService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // 保存录屏权限数据
+        // 保存录屏权限数据到全局静态变量，不用SP序列化，不会报错
         if (intent != null && intent.hasExtra("code") && intent.hasExtra("data")) {
-            getSharedPreferences("config", MODE_PRIVATE).edit()
-                    .putInt("code", intent.getIntExtra("code", -1))
-                    .putParcelable("data", intent.getParcelableExtra("data"))
-                    .apply();
+            screenCode = intent.getIntExtra("code", -1);
+            screenData = intent.getParcelableExtra("data");
         }
         return START_STICKY; // 服务被杀自动重启
     }
