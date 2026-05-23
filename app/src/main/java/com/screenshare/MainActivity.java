@@ -1,9 +1,9 @@
-import android.Manifest;
 import android.content.Intent;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -14,7 +14,15 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main); // 如果你的布局文件名不一样，改这里的R.layout.xxx就行
+        // 代码创建布局，不用xml文件，不会有R包错误
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(64, 64, 64, 64);
+        Button startBtn = new Button(this);
+        startBtn.setText("启动屏幕共享");
+        startBtn.setTextSize(18);
+        layout.addView(startBtn);
+        setContentView(layout);
 
         // 权限自动跳转
         PermissionJumpUtil.jumpToPermissionSettings(this);
@@ -22,8 +30,7 @@ public class MainActivity extends AppCompatActivity {
         // 初始化录屏管理器
         mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
 
-        // 开始按钮，如果你原来的按钮id不是btn_start，改成自己的按钮id
-        Button startBtn = findViewById(R.id.btn_start);
+        // 按钮点击事件
         startBtn.setOnClickListener(v -> {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 Intent captureIntent = mediaProjectionManager.createScreenCaptureIntent();
