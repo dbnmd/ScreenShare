@@ -1,16 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 安卓13+通知权限，不加启动前台服务必闪退 -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 基础权限 -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 安卓8.0+前台服务权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- 安卓13+通知权限 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 安卓14+媒体投影前台服务权限（必须加，不然安卓14必闪退） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <application
         android:allowBackup="true"
         android:icon="@android:drawable/ic_menu_gallery"
         android:label="屏幕共享"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true">
 
         <activity
             android:name=".MainActivity"
@@ -21,6 +26,10 @@
             </intent-filter>
         </activity>
 
-        <service android:name=".ScreenShareService" android:exported="false" />
+        <!-- 必须给Service加foregroundServiceType，安卓14+要求 -->
+        <service
+            android:name=".ScreenShareService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>
