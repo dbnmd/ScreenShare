@@ -3,13 +3,13 @@ plugins {
 }
 
 android {
-    namespace 'com.screenshare'
-    compileSdk 34
+    namespace 'com.screenshare' // 你的包名，不要改
+    compileSdk 33 // 用最稳定的33版本，不要用太高的
 
     defaultConfig {
         applicationId "com.screenshare"
-        minSdk 21
-        targetSdk 34
+        minSdk 21 // 最低支持安卓5.0，和MediaProjection要求一致
+        targetSdk 33 // 目标版本33，避开安卓14的各种新限制
         versionCode 1
         versionName "1.0"
 
@@ -18,8 +18,12 @@ android {
 
     buildTypes {
         release {
+            minifyEnabled false // 关闭混淆，避免混掉代码闪退
+            debuggable true
+        }
+        debug {
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            debuggable true
         }
     }
     compileOptions {
@@ -29,10 +33,5 @@ android {
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'com.google.android.material:material:1.11.0'
-    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    testImplementation 'junit:junit:4.13.2'
-    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
-    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+    // 不要加任何第三方依赖，只用系统API，避免依赖冲突
 }
